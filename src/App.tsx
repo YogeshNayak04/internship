@@ -22,8 +22,10 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [first, setFirst] = useState(0);
-  const [selectCount, setSelectCount] = useState(0);
-  const [version, setVersion] = useState(0); // Force rerender
+  const [selectCount, setSelectCount] = useState<number>(0);
+  const [version, setVersion] = useState(0); 
+  const [manuallyDeselectedIds, setManuallyDeselectedIds] = useState<Set<number>>(new Set());
+
   const rows = 12;
 
   const triggeredByInput = useRef(false);
@@ -34,7 +36,7 @@ function App() {
 
       setLoading(true);
       const response = await axios.get(
-        `https://api.artic.edu/api/v1/artworks?page=${page}&limit=${rows}`
+       ` https://api.artic.edu/api/v1/artworks?page=${page}&limit=${rows}`
       );
 
       const artworks = response.data.data.map((item: any) => ({
@@ -55,23 +57,36 @@ function App() {
     [pagesCache]
   );
 
-  const loadPage = useCallback(
-    async (page: number) => {
-      const artworks = await fetchPage(page);
-      const pageStartIndex = (page - 1) * rows + 1;
+const loadPage = useCallback(
+  async (page: number) => {
+    const artworks = await fetchPage(page);
+    const pageStartIndex = (page - 1) * rows + 1;
 
-      setSelectedIds((prevSelected) => {
-        const newSelected = new Set(prevSelected);
-        artworks.forEach((artwork, index) => {
-          const globalIndex = pageStartIndex + index;
-          if (globalIndex <= selectCount) newSelected.add(artwork.id);
-          else newSelected.delete(artwork.id);
-        });
-        return newSelected;
+    setSelectedIds((prevSelected) => {
+      const newSelected = new Set(prevSelected);
+
+     artworks.forEach((artwork: Artwork, index: number) => {
+        const globalIndex = pageStartIndex + index;
+
+        const shouldBeSelected = globalIndex <= selectCount;
+        const isManuallyUnselected = manuallyDeselectedIds.has(artwork.id);
+
+        if (shouldBeSelected && !isManuallyUnselected) {
+          newSelected.add(artwork.id);
+        } else if (isManuallyUnselected) {
+          newSelected.delete(artwork.id); 
+        }
       });
-    },
-    [fetchPage, selectCount, rows]
-  );
+
+      return newSelected;
+    });
+  },
+  [fetchPage, selectCount, rows, manuallyDeselectedIds]
+);
+
+
+
+
 
   useEffect(() => {
     if (!triggeredByInput.current) {
@@ -89,30 +104,63 @@ function App() {
     loadPage(page);
   };
 
-  const handleSelectRowCount = async (count: number) => {
-    if (count < 0) count = 0;
-    if (count > totalRecords) count = totalRecords;
+const handleSelectRowCount = async (count: number) => {
+  if (count < 0) count = 0;
+  if (count > totalRecords) count = totalRecords;
 
-    triggeredByInput.current = true;
-    setSelectCount(count);
-    setFirst(0); // reset to first page
-    await loadPage(1); // reload data for page 1
-    setVersion((v) => v + 1); // force rerender
-  };
+  triggeredByInput.current = true;
+  setSelectCount(count);
+  setManuallyDeselectedIds(new Set()); 
+
+  const page = 1;
+  const artworks = await fetchPage(page);
+  const pageStartIndex = (page - 1) * rows + 1;
+
+  setSelectedIds(() => {
+    const newSelected = new Set<number>();
+    artworks.forEach((artwork: Artwork, index: number) => {
+      const globalIndex = pageStartIndex + index;
+      if (globalIndex <= count) {
+        newSelected.add(artwork.id);
+      }
+    });
+    return newSelected;
+  });
+
+  setFirst(0);
+  setVersion((v) => v + 1); 
+};
+
+
 
   const currentPage = first / rows + 1;
   const data = pagesCache.get(currentPage) || [];
 
   const isRowSelected = (row: Artwork) => selectedIds.has(row.id);
 
-  const toggleRowSelection = (row: Artwork, checked: boolean) => {
-    setSelectedIds((prev) => {
-      const newSelected = new Set(prev);
-      if (checked) newSelected.add(row.id);
-      else newSelected.delete(row.id);
-      return newSelected;
-    });
-  };
+const toggleRowSelection = (row: Artwork, checked: boolean) => {
+  setSelectedIds((prev) => {
+    const newSelected = new Set(prev);
+    if (checked) {
+      newSelected.add(row.id);
+    } else {
+      newSelected.delete(row.id);
+    }
+    return newSelected;
+  });
+
+  setManuallyDeselectedIds((prev) => {
+    const newSet = new Set(prev);
+    if (checked) {
+      newSet.delete(row.id); 
+    } else {
+      newSet.add(row.id); 
+    }
+    return newSet;
+  });
+};
+
+
 
   return (
     <div className="app">
@@ -120,30 +168,39 @@ function App() {
       <InputOverlay onSubmit={handleSelectRowCount} />
 
       <DataTable
-        key={version}
-        value={data}
-        paginator
-        first={first}
-        rows={rows}
-        totalRecords={totalRecords}
-        lazy
-        loading={loading}
-        dataKey="id"
-        selection={data.filter((item) => selectedIds.has(item.id))}
-        onSelectionChange={(e) => {
-          const newSelectedIds = new Set(selectedIds);
-          e.value.forEach((item: Artwork) => {
-            newSelectedIds.add(item.id);
-          });
-          data.forEach((item) => {
-            if (!e.value.some((sel: Artwork) => sel.id === item.id)) {
-              newSelectedIds.delete(item.id);
-            }
-          });
-          setSelectedIds(newSelectedIds);
-        }}
-        onPage={onPageChange}
-      >
+  key={version}
+  value={data}
+  paginator
+  first={first}
+  rows={rows}
+  totalRecords={totalRecords}
+  lazy
+  loading={loading}
+  dataKey="id"
+  selectionMode="multiple"   
+  selection={data.filter((item) => selectedIds.has(item.id))}
+  onSelectionChange={(e: { value: Artwork[] }) => {
+    const newSelectedIds = new Set(selectedIds);
+
+    e.value.forEach((item: Artwork) => {
+      newSelectedIds.add(item.id);
+      manuallyDeselectedIds.delete(item.id);
+    });
+
+    data.forEach((item) => {
+      const wasUnselected = !e.value.some((sel: Artwork) => sel.id === item.id);
+      if (wasUnselected) {
+        newSelectedIds.delete(item.id);
+        manuallyDeselectedIds.add(item.id);
+      }
+    });
+
+    setSelectedIds(newSelectedIds);
+    setManuallyDeselectedIds(new Set(manuallyDeselectedIds));
+  }}
+  onPage={onPageChange}
+>
+
         <Column
           selectionMode="multiple"
           headerStyle={{ width: "3em" }}
